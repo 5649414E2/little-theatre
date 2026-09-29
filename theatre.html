@@ -70,6 +70,7 @@ select{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);b
     <button class="alt" id="full">Full screen</button>
   </div>
   <div class="hint" id="status"></div>
+  <div class="hint" id="log" style="white-space:pre-line;font-size:12px"></div>
 
   <label for="qual">Video quality (only for you)</label>
   <select id="qual">
@@ -97,6 +98,13 @@ select{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);b
 <script>
 const $=id=>document.getElementById(id);
 let peer=null,conn=null,isHost=false,room='',me='',partner='',pl=null,curUrl='';
+const T={username:'openrelayproject',credential:'openrelayproject'};
+const ICE={config:{iceServers:[
+  {urls:'stun:stun.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'},
+  {urls:'turn:openrelay.metered.ca:80',...T},{urls:'turn:openrelay.metered.ca:443',...T},{urls:'turn:openrelay.metered.ca:443?transport=tcp',...T}
+]}};
+const logs=[];
+function log(t){const d=new Date();logs.push(d.toTimeString().slice(0,8)+' '+t);if(logs.length>6)logs.shift();$('log').textContent=logs.join('\n')}
 let wantQ='default',ccOn=false,subUrl=null,vid=null;
 const stage=$('stage');
 
@@ -131,10 +139,12 @@ function newCode(){let c='';for(let i=0;i<5;i++)c+=A[Math.floor(Math.random()*A.
 $('create').onclick=()=>{
   if(!needName())return;
   isHost=true;room=newCode();door('Opening...');
-  peer=new Peer('lt-'+room);
-  peer.on('open',()=>{enter();say('Waiting for your guest. Load a video while you wait.')});
-  peer.on('connection',c=>{if(conn&&conn.open){c.close();return}setConn(c)});
+  peer=new Peer('lt-'+room,ICE);
+  peer.on('disconnected',()=>{log('lost matchmaker, reconnecting');try{peer.reconnect()}catch(e){}});
+  peer.on('open',()=>{enter();log('room open');say('Waiting for your guest. Load a video while you wait.')});
+  peer.on('connection',c=>{log('guest connecting');if(conn&&conn.open){const old=conn;conn=null;old.close()}setConn(c)});
   peer.on('error',e=>{
+    log('error: '+e.type);
     if(e.type==='unavailable-id'){peer.destroy();$('create').click()}
     else door('Could not connect: '+e.type+'. Check your internet and try again.');
   });
@@ -145,9 +155,11 @@ $('join').onclick=()=>{
   room=$('code').value.trim().toUpperCase();
   if(room.length<3){door('Enter the theatre code.');return}
   door('Looking for the theatre...');
-  peer=new Peer();
+  peer=new Peer(ICE);
+  peer.on('disconnected',()=>{log('lost matchmaker, reconnecting');try{peer.reconnect()}catch(e){}});
   peer.on('open',()=>{setConn(peer.connect('lt-'+room,{reliable:true}));enter();say('Connecting...')});
   peer.on('error',e=>{
+    log('error: '+e.type);
     if(e.type==='peer-unavailable'){
       $('door').classList.remove('hide');$('hall').classList.add('hide');
       door('No theatre with that code. Check it, and make sure your host has opened it.');
@@ -165,12 +177,22 @@ function send(o){if(conn&&conn.open)conn.send(o)}
 function setConn(c){
   conn=c;
   c.on('open',()=>{
+    log('linked with partner');
     send({a:'hello',n:me});
     if(isHost&&curUrl){send({a:'load',u:curUrl});setTimeout(shareState,1500)}
     say('You are both in the theatre.');
   });
-  c.on('data',onMsg);
-  c.on('close',()=>{partner='';seats();say('Your guest left. They can rejoin with the same code.')});
+  c.on('data',onMsg);c.on('error',e=>log('link error: '+e.type));
+  c.on('close',()=>{
+    if(conn!==c)return;
+    log('link closed');
+    partner='';seats();
+    if(isHost)say('Your guest left. They can rejoin with the same code.');
+    else{
+      say('Lost connection. Reconnecting...');
+      setTimeout(()=>{if(conn===c&&peer&&!peer.destroyed){if(peer.disconnected)peer.reconnect();setConn(peer.connect('lt-'+room,{reliable:true}))}},2500);
+    }
+  });
 }
 function shareState(){if(pl)send({a:pl.playing()?'play':'pause',t:pl.time()})}
 
