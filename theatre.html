@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Little Theatre</title>
+<style>
+:root{--bg:#1a0c14;--panel:#2a1420;--ink:#f6ecd9;--dim:#b79aa6;--gold:#e8b34a;--line:#452433}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 Georgia,serif;min-height:100vh}
+.curtain{height:26px;background:repeating-linear-gradient(90deg,#6d1830 0 22px,#831f3a 22px 44px);border-bottom:3px solid var(--gold)}
+main{max-width:560px;margin:0 auto;padding:18px 16px 40px}
+h1{font-size:30px;margin:6px 0 2px;color:var(--gold)}
+.sub{color:var(--dim);margin:0 0 18px}
+label{display:block;margin:14px 0 6px;font-weight:bold}
+input{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:16px}
+button{padding:13px;border:0;border-radius:10px;background:var(--gold);color:#241804;font-weight:bold;font-size:16px;width:100%;margin-top:12px}
+button.alt{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
+.row{display:flex;gap:8px}.row button{margin-top:8px}
+.or{text-align:center;color:var(--dim);margin:14px 0 0}
+.hint{color:var(--dim);font-size:14px;margin-top:6px}
+.stage{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden;border:2px solid var(--line)}
+.stage iframe,.stage video{position:absolute;inset:0;width:100%;height:100%;border:0}
+.shield{position:absolute;inset:0;z-index:2}
+.seats{display:flex;gap:8px;margin:12px 0}
+.seat{flex:1;padding:10px;border-radius:10px;background:var(--panel);border:1px solid var(--line);text-align:center}
+.seat.empty{color:var(--dim);border-style:dashed}
+.code{font-size:26px;letter-spacing:4px;color:var(--gold);text-align:center;margin:6px 0}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div class="curtain"></div>
+<main>
+
+<section id="door">
+  <h1>The Little Theatre</h1>
+  <p class="sub">Two seats. One screen. Everything you press, they see.</p>
+  <label for="name">Your name</label>
+  <input id="name" placeholder="Take a seat as..." maxlength="20">
+  <button id="create">Open a new theatre</button>
+  <div class="or">or join one</div>
+  <label for="code">Theatre code</label>
+  <input id="code" placeholder="e.g. KQMRT" maxlength="5" autocapitalize="characters">
+  <button id="join" class="alt">Join this theatre</button>
+  <div class="hint" id="doorMsg"></div>
+</section>
+
+<section id="hall" class="hide">
+  <div class="code" id="roomCode"></div>
+  <div class="hint" style="text-align:center">Send this code or link to your guest</div>
+  <button id="share" class="alt">Copy invite link</button>
+  <div class="seats"><div class="seat" id="s1"></div><div class="seat empty" id="s2">Empty seat</div></div>
+
+  <div class="stage" id="stage"><div class="shield"></div></div>
+
+  <label for="url">Video link</label>
+  <div class="row"><input id="url" placeholder="YouTube or .mp4 link" inputmode="url"><button id="load" style="width:auto">Load</button></div>
+  <div class="hint">Loading a video loads it for both of you. YouTube and direct .mp4 links work.</div>
+
+  <div class="row">
+    <button class="alt" id="back">-10s</button>
+    <button id="pp">Play</button>
+    <button class="alt" id="fwd">+10s</button>
+  </div>
+  <div class="row">
+    <button class="alt" id="restart">Restart</button>
+    <button class="alt" id="sync">Sync them to me</button>
+    <button class="alt" id="full">Full screen</button>
+  </div>
+  <div class="hint" id="status"></div>
+</section>
+
+</main>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let peer=null,conn=null,isHost=false,room='',me='',partner='',pl=null,curUrl='';
+const stage=$('stage');
+
+// prefill code from invite link
+const m=location.hash.match(/room=([A-Z0-9]+)/i);
+if(m)$('code').value=m[1].toUpperCase();
+$('name').value=localStorage.getItem('lt-name')||'';
+
+function say(t){$('status').textContent=t}
+function door(t){$('doorMsg').textContent=t}
+function seats(){
+  $('s1').textContent=me+' (you)';
+  const s=$('s2');
+  if(partner){s.textContent=partner;s.classList.remove('empty')}
+  else{s.textContent='Empty seat';s.classList.add('empty')}
+}
+function enter(){
+  $('door').classList.add('hide');$('hall').classList.remove('hide');
+  $('roomCode').textContent=room;seats();
+}
+function needName(){
+  me=$('name').value.trim();
+  if(!me){door('Type your name first.');return false}
+  try{localStorage.setItem('lt-name',me)}catch(e){}
+  return true;
+}
+
+// ---- rooms ----
+const A='ABCDEFGHJKMNPQRSTUVWXYZ';
+function newCode(){let c='';for(let i=0;i<5;i++)c+=A[Math.floor(Math.random()*A.length)];return c}
+
+$('create').onclick=()=>{
+  if(!needName())return;
+  isHost=true;room=newCode();door('Opening...');
+  peer=new Peer('lt-'+room);
+  peer.on('open',()=>{enter();say('Waiting for your guest. Load a video while you wait.')});
+  peer.on('connection',c=>{if(conn&&conn.open){c.close();return}setConn(c)});
+  peer.on('error',e=>{
+    if(e.type==='unavailable-id'){peer.destroy();$('create').click()}
+    else door('Could not connect: '+e.type+'. Check your internet and try again.');
+  });
+};
+
+$('join').onclick=()=>{
+  if(!needName())return;
+  room=$('code').value.trim().toUpperCase();
+  if(room.length<3){door('Enter the theatre code.');return}
+  door('Looking for the theatre...');
+  peer=new Peer();
+  peer.on('open',()=>{setConn(peer.connect('lt-'+room,{reliable:true}));enter();say('Connecting...')});
+  peer.on('error',e=>{
+    if(e.type==='peer-unavailable'){
+      $('door').classList.remove('hide');$('hall').classList.add('hide');
+      door('No theatre with that code. Check it, and make sure your host has opened it.');
+    }else say('Connection problem: '+e.type);
+  });
+};
+
+$('share').onclick=()=>{
+  const l=location.href.split('#')[0]+'#room='+room;
+  navigator.clipboard.writeText(l).then(()=>{$('share').textContent='Copied';setTimeout(()=>$('share').textContent='Copy invite link',1500)});
+};
+
+// ---- messaging ----
+function send(o){if(conn&&conn.open)conn.send(o)}
+function setConn(c){
+  conn=c;
+  c.on('open',()=>{
+    send({a:'hello',n:me});
+    if(isHost&&curUrl){send({a:'load',u:curUrl});setTimeout(shareState,1500)}
+    say('You are both in the theatre.');
+  });
+  c.on('data',onMsg);
+  c.on('close',()=>{partner='';seats();say('Your guest left. They can rejoin with the same code.')});
+}
+function shareState(){if(pl)send({a:pl.playing()?'play':'pause',t:pl.time()})}
+
+function onMsg(d){
+  if(d.a==='hello'){partner=d.n;seats();if(isHost&&curUrl){send({a:'load',u:curUrl});setTimeout(shareState,1500)}}
+  else if(d.a==='load'){loadVideo(d.u,false)}
+  else if(d.a==='play'||d.a==='pause'||d.a==='seek'){apply(d.a,d.t)}
+}
+
+// ---- player ----
+let ytReady=null;
+function ytApi(){
+  if(ytReady)return ytReady;
+  ytReady=new Promise(res=>{
+    if(window.YT&&YT.Player)return res();
+    window.onYouTubeIframeAPIReady=res;
+    const s=document.createElement('script');s.src='https://www.youtube.com/iframe_api';document.head.appendChild(s);
+  });
+  return ytReady;
+}
+function ytId(u){
+  try{
+    const x=new URL(u),h=x.hostname.replace('www.','');
+    if(h==='youtu.be')return x.pathname.slice(1);
+    if(h.endsWith('youtube.com'))return x.searchParams.get('v')||(x.pathname.match(/\/(embed|shorts)\/([\w-]+)/)||[])[2];
+  }catch(e){}
+  return null;
+}
+function loadVideo(u,broadcast){
+  u=u.trim();if(!u)return;
+  const id=ytId(u);
+  const isFile=/\.(mp4|webm|ogv)(\?|$)/i.test(u);
+  if(!id&&!isFile){say('That link is not supported. Use a YouTube or .mp4 link.');return}
+  curUrl=u;pl=null;$('url').value=u;
+  stage.innerHTML='<div class="shield"></div>';
+  if(id){
+    ytApi().then(()=>{
+      const d=document.createElement('div');d.id='yt';stage.prepend(d);
+      const p=new YT.Player('yt',{videoId:id,playerVars:{controls:0,playsinline:1,rel:0,disablekb:1,modestbranding:1},
+        events:{onReady:()=>{pl={play:()=>p.playVideo(),pause:()=>p.pauseVideo(),seek:t=>p.seekTo(t,true),time:()=>p.getCurrentTime(),playing:()=>p.getPlayerState()==1};say('Video ready.')}}});
+    });
+  }else{
+    const v=document.createElement('video');v.src=u;v.playsInline=true;stage.prepend(v);
+    pl={play:()=>v.play().catch(()=>say('Tap Play to start.')),pause:()=>v.pause(),seek:t=>{v.currentTime=t},time:()=>v.currentTime,playing:()=>!v.paused};
+    say('Video ready.');
+  }
+  if(broadcast)send({a:'load',u});
+}
+function apply(a,t){
+  if(!pl){say('Video is still loading...');return}
+  if(a==='play'){pl.seek(t);pl.play();$('pp').textContent='Pause'}
+  else if(a==='pause'){pl.pause();pl.seek(t);$('pp').textContent='Play'}
+  else if(a==='seek'){pl.seek(t)}
+}
+function act(a,t){apply(a,t);send({a,t})}
+
+$('load').onclick=()=>loadVideo($('url').value,true);
+$('pp').onclick=()=>{if(!pl)return say('Load a video first.');pl.playing()?act('pause',pl.time()):act('play',pl.time())};
+$('back').onclick=()=>{if(pl)act('seek',Math.max(0,pl.time()-10))};
+$('fwd').onclick=()=>{if(pl)act('seek',pl.time()+10)};
+$('restart').onclick=()=>{if(pl)act('play',0)};
+$('sync').onclick=()=>{if(pl){send({a:pl.playing()?'play':'pause',t:pl.time()});say('Sent your spot to '+(partner||'your guest')+'.')}};
+$('full').onclick=()=>{(stage.requestFullscreen||stage.webkitRequestFullscreen||function(){}).call(stage)};
+</script>
+</body>
+</html>
