@@ -68,6 +68,7 @@ button.alt{background:var(--panel);color:var(--ink);border:1px solid var(--line)
     <button class="alt" id="sync">Sync everyone to me</button>
     <button class="alt" id="full">Full screen</button>
   </div>
+  <div class="row"><button class="alt" id="reload">Reload my video (only for me)</button></div>
   <div class="hint" id="status"></div>
   <div class="hint" id="log" style="white-space:pre-line;font-size:12px"></div>
 
@@ -239,10 +240,13 @@ function loadVideo(u,broadcast){
             caps:on=>{try{p.loadModule('captions');p.setOption('captions','track',on?{languageCode:$('lang').value}:{})}catch(e){}}};
           say('Video ready.');if(ccOn)pl.caps(true);flush();
         },
-        onStateChange:e=>{if(e.data===1&&wantQ!=='default'&&pl)pl.quality(wantQ)}}});
+        onStateChange:e=>{if(e.data===1&&wantQ!=='default'&&pl)pl.quality(wantQ)},
+        onError:e=>{const c=e.data;log('video error '+c);
+          say(c===101||c===150?'This video cannot be played here. The owner blocks it outside YouTube, or it is blocked in this country. Try another link.':(c===100?'This video is private or was removed.':'The video could not play (error '+c+').'))}}});
+      setTimeout(()=>{if(!pl&&curUrl===u){log('video slow');say('The video is taking too long. Tap Reload my video.')}},12000);
     });
   }else{
-    const v=document.createElement('video');v.src=u;v.playsInline=true;stage.prepend(v);vid=v;addTrack();
+    const v=document.createElement('video');v.src=u;v.playsInline=true;stage.prepend(v);vid=v;addTrack();v.addEventListener('error',()=>{log('file error');say('This file could not be loaded. The site may block it here, or the link is wrong.')});
     pl={play:()=>v.play().catch(()=>say('Tap Play to start.')),pause:()=>v.pause(),seek:t=>{v.currentTime=t},time:()=>v.currentTime,playing:()=>!v.paused,
         quality:()=>{},caps:on=>{const t=v.textTracks[0];if(t)t.mode=on?'showing':'hidden'}};
     say('Video ready.');flush();
@@ -258,8 +262,10 @@ function apply(a,t){
 function flush(){if(pend&&pl){const p=pend;pend=null;apply(p[0],p[1])}}
 function act(a,t){apply(a,t);send({a:a,t:t})}
 
+function reloadMine(){if(!curUrl)return say('Load a video first.');const u=curUrl;curUrl='';say('Reloading the video...');loadVideo(u,false)}
+$('reload').onclick=reloadMine;
 $('load').onclick=()=>loadVideo($('url').value,true);
-$('pp').onclick=()=>{if(!pl)return say('Load a video first.');pl.playing()?act('pause',pl.time()):act('play',pl.time())};
+$('pp').onclick=()=>{if(!pl){if(curUrl)reloadMine();else say('Load a video first.');return}pl.playing()?act('pause',pl.time()):act('play',pl.time())};
 $('back').onclick=()=>{if(pl)act('seek',Math.max(0,pl.time()-10))};
 $('fwd').onclick=()=>{if(pl)act('seek',pl.time()+10)};
 $('restart').onclick=()=>{if(pl)act('play',0)};
