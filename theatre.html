@@ -26,6 +26,7 @@ button.alt{background:var(--panel);color:var(--ink);border:1px solid var(--line)
 .seat{flex:1;padding:10px;border-radius:10px;background:var(--panel);border:1px solid var(--line);text-align:center}
 .seat.empty{color:var(--dim);border-style:dashed}
 .code{font-size:26px;letter-spacing:4px;color:var(--gold);text-align:center;margin:6px 0}
+select{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:16px}
 .hide{display:none}
 </style>
 </head>
@@ -69,6 +70,26 @@ button.alt{background:var(--panel);color:var(--ink);border:1px solid var(--line)
     <button class="alt" id="full">Full screen</button>
   </div>
   <div class="hint" id="status"></div>
+
+  <label for="qual">Video quality (only for you)</label>
+  <select id="qual">
+    <option value="default">Auto</option>
+    <option value="tiny">Lowest (144p, saves most data)</option>
+    <option value="small">240p</option>
+    <option value="medium">360p</option>
+    <option value="large">480p</option>
+    <option value="hd720">720p</option>
+  </select>
+  <div class="hint">YouTube treats this as a request and may ignore it. It applies once the video is playing. .mp4 files have one fixed quality.</div>
+
+  <label for="lang">Subtitles (only for you)</label>
+  <div class="row">
+    <select id="lang"><option value="en">English</option><option value="fr">French</option><option value="es">Spanish</option><option value="sw">Swahili</option></select>
+    <button class="alt" id="cc" style="width:auto">Subtitles: off</button>
+  </div>
+  <label for="subfile">Subtitle file for .mp4 videos</label>
+  <input id="subfile" type="file" accept=".srt,.vtt">
+  <div class="hint">YouTube: use the button, and it only works if the video has captions. .mp4: pick a .srt or .vtt file from your phone, then turn Subtitles on.</div>
 </section>
 
 </main>
@@ -76,6 +97,7 @@ button.alt{background:var(--panel);color:var(--ink);border:1px solid var(--line)
 <script>
 const $=id=>document.getElementById(id);
 let peer=null,conn=null,isHost=false,room='',me='',partner='',pl=null,curUrl='';
+let wantQ='default',ccOn=false,subUrl=null,vid=null;
 const stage=$('stage');
 
 // prefill code from invite link
@@ -182,17 +204,22 @@ function loadVideo(u,broadcast){
   const id=ytId(u);
   const isFile=/\.(mp4|webm|ogv)(\?|$)/i.test(u);
   if(!id&&!isFile){say('That link is not supported. Use a YouTube or .mp4 link.');return}
-  curUrl=u;pl=null;$('url').value=u;
+  curUrl=u;pl=null;vid=null;$('url').value=u;
   stage.innerHTML='<div class="shield"></div>';
   if(id){
     ytApi().then(()=>{
       const d=document.createElement('div');d.id='yt';stage.prepend(d);
       const p=new YT.Player('yt',{videoId:id,playerVars:{controls:0,playsinline:1,rel:0,disablekb:1,modestbranding:1},
-        events:{onReady:()=>{pl={play:()=>p.playVideo(),pause:()=>p.pauseVideo(),seek:t=>p.seekTo(t,true),time:()=>p.getCurrentTime(),playing:()=>p.getPlayerState()==1};say('Video ready.')}}});
+        events:{onReady:()=>{pl={play:()=>p.playVideo(),pause:()=>p.pauseVideo(),seek:t=>p.seekTo(t,true),time:()=>p.getCurrentTime(),playing:()=>p.getPlayerState()==1,
+          quality:q=>{try{p.setPlaybackQuality(q)}catch(e){}},
+          caps:on=>{try{p.loadModule('captions');p.setOption('captions','track',on?{languageCode:$('lang').value}:{})}catch(e){}}};
+          say('Video ready.');if(ccOn)pl.caps(true)},
+        onStateChange:e=>{if(e.data===1&&wantQ!=='default'&&pl)pl.quality(wantQ)}}});
     });
   }else{
-    const v=document.createElement('video');v.src=u;v.playsInline=true;stage.prepend(v);
-    pl={play:()=>v.play().catch(()=>say('Tap Play to start.')),pause:()=>v.pause(),seek:t=>{v.currentTime=t},time:()=>v.currentTime,playing:()=>!v.paused};
+    const v=document.createElement('video');v.src=u;v.playsInline=true;stage.prepend(v);vid=v;addTrack();
+    pl={play:()=>v.play().catch(()=>say('Tap Play to start.')),pause:()=>v.pause(),seek:t=>{v.currentTime=t},time:()=>v.currentTime,playing:()=>!v.paused,
+        quality:()=>{},caps:on=>{const t=v.textTracks[0];if(t)t.mode=on?'showing':'hidden'}};
     say('Video ready.');
   }
   if(broadcast)send({a:'load',u});
@@ -212,6 +239,34 @@ $('fwd').onclick=()=>{if(pl)act('seek',pl.time()+10)};
 $('restart').onclick=()=>{if(pl)act('play',0)};
 $('sync').onclick=()=>{if(pl){send({a:pl.playing()?'play':'pause',t:pl.time()});say('Sent your spot to '+(partner||'your guest')+'.')}};
 $('full').onclick=()=>{(stage.requestFullscreen||stage.webkitRequestFullscreen||function(){}).call(stage)};
+
+// ---- quality and subtitles (local only) ----
+$('qual').onchange=()=>{
+  wantQ=$('qual').value;
+  if(pl&&pl.quality){pl.quality(wantQ);say(vid?'.mp4 files have one fixed quality.':'Quality requested. YouTube may take a few seconds or ignore it.')}
+};
+$('cc').onclick=()=>{
+  ccOn=!ccOn;$('cc').textContent='Subtitles: '+(ccOn?'on':'off');
+  if(pl&&pl.caps)pl.caps(ccOn);
+  else say('Load a video first.');
+};
+$('lang').onchange=()=>{if(ccOn&&pl&&pl.caps)pl.caps(true)};
+function srtToVtt(t){return 'WEBVTT\n\n'+t.replace(/\r/g,'').replace(/(\d\d:\d\d:\d\d),(\d{3})/g,'$1.$2')}
+function addTrack(){
+  if(!vid||!subUrl)return;
+  const tr=document.createElement('track');tr.kind='subtitles';tr.label='Subtitles';tr.default=true;tr.src=subUrl;
+  vid.appendChild(tr);
+  setTimeout(()=>{if(vid.textTracks[0])vid.textTracks[0].mode=ccOn?'showing':'hidden'},300);
+}
+$('subfile').onchange=e=>{
+  const f=e.target.files[0];if(!f)return;
+  f.text().then(t=>{
+    if(!/^WEBVTT/.test(t.trim()))t=srtToVtt(t);
+    subUrl=URL.createObjectURL(new Blob([t],{type:'text/vtt'}));
+    if(vid){[...vid.querySelectorAll('track')].forEach(x=>x.remove());addTrack();say('Subtitle file added. Turn Subtitles on.')}
+    else say(pl?'Subtitle files only work with .mp4 videos. For YouTube use the Subtitles button.':'Subtitle file saved. It will be used when an .mp4 loads.');
+  });
+};
 </script>
 </body>
 </html>
