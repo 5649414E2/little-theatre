@@ -98,9 +98,10 @@ button.alt{background:var(--panel);color:var(--ink);border:1px solid var(--line)
 <script>
 const $=id=>document.getElementById(id);
 const A='ABCDEFGHJKMNPQRSTUVWXYZ';
-const BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
+const BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt','wss://test.mosquitto.org:8081','wss://mqtt.eclipseprojects.io:443/mqtt'];
+const clients=[];const seenMsg=new Set();
 const myId=Math.random().toString(36).slice(2,10);
-let me='',room='',topic='',client=null,pl=null,curUrl='',pend=null;
+let me='',room='',topic='',pl=null,curUrl='',pend=null;
 let wantQ='default',ccOn=false,subUrl=null,vid=null;
 const mem=new Map();
 const stage=$('stage');
@@ -148,36 +149,38 @@ $('share').onclick=()=>{
 };
 
 // ---- connection (public message server, no direct phone-to-phone link) ----
-let bi=0,failTimer=null;
+function up(){return clients.filter(c=>c.connected).length}
+function updateStatus(){
+  const n=up();
+  say(n?'Connected to '+n+' of '+BROKERS.length+' servers. Share the code so others can take a seat.':'Connecting... if this stays for over a minute, check your internet.');
+}
 function connect(){
-  log('connecting to server '+(bi+1));
-  client=mqtt.connect(BROKERS[bi],{clientId:'lt'+myId,clean:true,connectTimeout:8000,reconnectPeriod:3000,keepalive:30,
-    will:{topic:topic,payload:JSON.stringify({a:'bye',id:myId}),qos:0}});
-  failTimer=setTimeout(()=>{
-    if(client&&!client.connected){log('server slow, trying another');client.end(true);bi=(bi+1)%BROKERS.length;connect()}
-  },9000);
-  client.on('connect',()=>{
-    clearTimeout(failTimer);log('connected');
-    client.subscribe(topic,{qos:0},err=>{
-      if(err){log('subscribe error');return}
-      send({a:'hello'});
-      say('You are in the theatre. Share the code so others can take a seat.');
+  BROKERS.forEach((url,i)=>{
+    const c=mqtt.connect(url,{clientId:'lt'+myId+i,clean:true,connectTimeout:8000,reconnectPeriod:4000,keepalive:30,
+      will:{topic:topic,payload:JSON.stringify({a:'bye',id:myId}),qos:0}});
+    clients.push(c);
+    let was=false;
+    c.on('connect',()=>{
+      was=true;log('server '+(i+1)+' connected');
+      c.subscribe(topic,{qos:0},err=>{if(!err){send({a:'hello'},c);updateStatus()}});
+    });
+    c.on('close',()=>{if(was){was=false;log('server '+(i+1)+' lost')}updateStatus()});
+    c.on('error',()=>{});
+    c.on('message',(tp,buf)=>{
+      let d;try{d=JSON.parse(buf.toString())}catch(e){return}
+      if(d.id===myId)return;
+      if(d.m){if(seenMsg.has(d.m))return;seenMsg.add(d.m);if(seenMsg.size>300)seenMsg.delete(seenMsg.values().next().value)}
+      onMsg(d);
     });
   });
-  client.on('message',(tp,buf)=>{
-    let d;try{d=JSON.parse(buf.toString())}catch(e){return}
-    if(d.id===myId)return;
-    onMsg(d);
-  });
-  client.on('reconnect',()=>log('reconnecting...'));
-  client.on('offline',()=>log('offline'));
-  client.on('error',e=>log('error: '+((e&&e.message)||e)));
+  updateStatus();
 }
-function send(o){
-  if(client&&client.connected)client.publish(topic,JSON.stringify(Object.assign({id:myId,n:me},o)));
+function send(o,only){
+  const m=JSON.stringify(Object.assign({id:myId,n:me,m:Math.random().toString(36).slice(2,10)},o));
+  (only?[only]:clients).forEach(c=>{if(c.connected)c.publish(topic,m)});
 }
 setInterval(()=>{
-  if(!client)return;
+  if(!clients.length)return;
   send({a:'ping'});
   const now=Date.now();let ch=false;
   mem.forEach((v,k)=>{if(now-v.seen>30000){mem.delete(k);ch=true}});
