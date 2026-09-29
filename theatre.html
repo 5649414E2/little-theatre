@@ -13,7 +13,7 @@ main{max-width:560px;margin:0 auto;padding:18px 16px 40px}
 h1{font-size:30px;margin:6px 0 2px;color:var(--gold)}
 .sub{color:var(--dim);margin:0 0 18px}
 label{display:block;margin:14px 0 6px;font-weight:bold}
-input{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:16px}
+input,select{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:16px}
 button{padding:13px;border:0;border-radius:10px;background:var(--gold);color:#241804;font-weight:bold;font-size:16px;width:100%;margin-top:12px}
 button.alt{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
 .row{display:flex;gap:8px}.row button{margin-top:8px}
@@ -22,11 +22,10 @@ button.alt{background:var(--panel);color:var(--ink);border:1px solid var(--line)
 .stage{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden;border:2px solid var(--line)}
 .stage iframe,.stage video{position:absolute;inset:0;width:100%;height:100%;border:0}
 .shield{position:absolute;inset:0;z-index:2}
-.seats{display:flex;gap:8px;margin:12px 0}
-.seat{flex:1;padding:10px;border-radius:10px;background:var(--panel);border:1px solid var(--line);text-align:center}
+.seats{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.seat{flex:1 1 40%;padding:10px;border-radius:10px;background:var(--panel);border:1px solid var(--line);text-align:center}
 .seat.empty{color:var(--dim);border-style:dashed}
 .code{font-size:26px;letter-spacing:4px;color:var(--gold);text-align:center;margin:6px 0}
-select{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:16px}
 .hide{display:none}
 </style>
 </head>
@@ -36,28 +35,28 @@ select{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);b
 
 <section id="door">
   <h1>The Little Theatre</h1>
-  <p class="sub">Two seats. One screen. Everything you press, they see.</p>
+  <p class="sub">Take a seat. Everything anyone presses, everyone sees.</p>
   <label for="name">Your name</label>
   <input id="name" placeholder="Take a seat as..." maxlength="20">
   <button id="create">Open a new theatre</button>
   <div class="or">or join one</div>
   <label for="code">Theatre code</label>
-  <input id="code" placeholder="e.g. KQMRT" maxlength="5" autocapitalize="characters">
+  <input id="code" placeholder="e.g. KQMRTB" maxlength="6" autocapitalize="characters">
   <button id="join" class="alt">Join this theatre</button>
   <div class="hint" id="doorMsg"></div>
 </section>
 
 <section id="hall" class="hide">
   <div class="code" id="roomCode"></div>
-  <div class="hint" style="text-align:center">Send this code or link to your guest</div>
+  <div class="hint" style="text-align:center">Send this code or link to anyone you want in the theatre</div>
   <button id="share" class="alt">Copy invite link</button>
-  <div class="seats"><div class="seat" id="s1"></div><div class="seat empty" id="s2">Empty seat</div></div>
+  <div class="seats" id="seats"></div>
 
   <div class="stage" id="stage"><div class="shield"></div></div>
 
   <label for="url">Video link</label>
   <div class="row"><input id="url" placeholder="YouTube or .mp4 link" inputmode="url"><button id="load" style="width:auto">Load</button></div>
-  <div class="hint">Loading a video loads it for both of you. YouTube and direct .mp4 links work.</div>
+  <div class="hint">Loading a video loads it for everyone. YouTube and direct .mp4 links work.</div>
 
   <div class="row">
     <button class="alt" id="back">-10s</button>
@@ -66,7 +65,7 @@ select{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);b
   </div>
   <div class="row">
     <button class="alt" id="restart">Restart</button>
-    <button class="alt" id="sync">Sync them to me</button>
+    <button class="alt" id="sync">Sync everyone to me</button>
     <button class="alt" id="full">Full screen</button>
   </div>
   <div class="hint" id="status"></div>
@@ -94,110 +93,111 @@ select{width:100%;padding:13px;border-radius:10px;border:1px solid var(--line);b
 </section>
 
 </main>
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-let peer=null,conn=null,isHost=false,room='',me='',partner='',pl=null,curUrl='';
-const T={username:'openrelayproject',credential:'openrelayproject'};
-const ICE={config:{iceServers:[
-  {urls:'stun:stun.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'},
-  {urls:'turn:openrelay.metered.ca:80',...T},{urls:'turn:openrelay.metered.ca:443',...T},{urls:'turn:openrelay.metered.ca:443?transport=tcp',...T}
-]}};
-const logs=[];
-function log(t){const d=new Date();logs.push(d.toTimeString().slice(0,8)+' '+t);if(logs.length>6)logs.shift();$('log').textContent=logs.join('\n')}
+const A='ABCDEFGHJKMNPQRSTUVWXYZ';
+const BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
+const myId=Math.random().toString(36).slice(2,10);
+let me='',room='',topic='',client=null,pl=null,curUrl='',pend=null;
 let wantQ='default',ccOn=false,subUrl=null,vid=null;
+const mem=new Map();
 const stage=$('stage');
-
-// prefill code from invite link
-const m=location.hash.match(/room=([A-Z0-9]+)/i);
-if(m)$('code').value=m[1].toUpperCase();
-$('name').value=localStorage.getItem('lt-name')||'';
-
+const logs=[];
+function log(t){logs.push(new Date().toTimeString().slice(0,8)+' '+t);if(logs.length>6)logs.shift();$('log').textContent=logs.join('\n')}
 function say(t){$('status').textContent=t}
 function door(t){$('doorMsg').textContent=t}
-function seats(){
-  $('s1').textContent=me+' (you)';
-  const s=$('s2');
-  if(partner){s.textContent=partner;s.classList.remove('empty')}
-  else{s.textContent='Empty seat';s.classList.add('empty')}
-}
-function enter(){
-  $('door').classList.add('hide');$('hall').classList.remove('hide');
-  $('roomCode').textContent=room;seats();
-}
+function newCode(){let c='';for(let i=0;i<6;i++)c+=A[Math.floor(Math.random()*A.length)];return c}
+
+const hm=location.hash.match(/room=([A-Z0-9]+)/i);
+if(hm)$('code').value=hm[1].toUpperCase();
+$('name').value=localStorage.getItem('lt-name')||'';
+
 function needName(){
   me=$('name').value.trim();
   if(!me){door('Type your name first.');return false}
   try{localStorage.setItem('lt-name',me)}catch(e){}
   return true;
 }
+function seats(){
+  const box=$('seats');box.innerHTML='';
+  const add=(t,e)=>{const d=document.createElement('div');d.className='seat'+(e?' empty':'');d.textContent=t;box.appendChild(d)};
+  add(me+' (you)');
+  mem.forEach(v=>add(v.n));
+  if(!mem.size)add('Empty seat',true);
+}
 
 // ---- rooms ----
-const A='ABCDEFGHJKMNPQRSTUVWXYZ';
-function newCode(){let c='';for(let i=0;i<5;i++)c+=A[Math.floor(Math.random()*A.length)];return c}
-
-$('create').onclick=()=>{
-  if(!needName())return;
-  isHost=true;room=newCode();door('Opening...');
-  peer=new Peer('lt-'+room,ICE);
-  peer.on('disconnected',()=>{log('lost matchmaker, reconnecting');try{peer.reconnect()}catch(e){}});
-  peer.on('open',()=>{enter();log('room open');say('Waiting for your guest. Load a video while you wait.')});
-  peer.on('connection',c=>{log('guest connecting');if(conn&&conn.open){const old=conn;conn=null;old.close()}setConn(c)});
-  peer.on('error',e=>{
-    log('error: '+e.type);
-    if(e.type==='unavailable-id'){peer.destroy();$('create').click()}
-    else door('Could not connect: '+e.type+'. Check your internet and try again.');
-  });
-};
-
+function enterRoom(){
+  if(!window.mqtt){door('Could not load the connection library. Check your internet and reload the page.');return}
+  $('door').classList.add('hide');$('hall').classList.remove('hide');
+  $('roomCode').textContent=room;topic='littletheatre-x9/'+room;seats();
+  say('Connecting...');connect();
+}
+$('create').onclick=()=>{if(!needName())return;room=newCode();enterRoom()};
 $('join').onclick=()=>{
   if(!needName())return;
   room=$('code').value.trim().toUpperCase();
-  if(room.length<3){door('Enter the theatre code.');return}
-  door('Looking for the theatre...');
-  peer=new Peer(ICE);
-  peer.on('disconnected',()=>{log('lost matchmaker, reconnecting');try{peer.reconnect()}catch(e){}});
-  peer.on('open',()=>{setConn(peer.connect('lt-'+room,{reliable:true}));enter();say('Connecting...')});
-  peer.on('error',e=>{
-    log('error: '+e.type);
-    if(e.type==='peer-unavailable'){
-      $('door').classList.remove('hide');$('hall').classList.add('hide');
-      door('No theatre with that code. Check it, and make sure your host has opened it.');
-    }else say('Connection problem: '+e.type);
-  });
+  if(room.length<4){door('Enter the theatre code.');return}
+  enterRoom();
 };
-
 $('share').onclick=()=>{
   const l=location.href.split('#')[0]+'#room='+room;
   navigator.clipboard.writeText(l).then(()=>{$('share').textContent='Copied';setTimeout(()=>$('share').textContent='Copy invite link',1500)});
 };
 
-// ---- messaging ----
-function send(o){if(conn&&conn.open)conn.send(o)}
-function setConn(c){
-  conn=c;
-  c.on('open',()=>{
-    log('linked with partner');
-    send({a:'hello',n:me});
-    if(isHost&&curUrl){send({a:'load',u:curUrl});setTimeout(shareState,1500)}
-    say('You are both in the theatre.');
+// ---- connection (public message server, no direct phone-to-phone link) ----
+let bi=0,failTimer=null;
+function connect(){
+  log('connecting to server '+(bi+1));
+  client=mqtt.connect(BROKERS[bi],{clientId:'lt'+myId,clean:true,connectTimeout:8000,reconnectPeriod:3000,keepalive:30,
+    will:{topic:topic,payload:JSON.stringify({a:'bye',id:myId}),qos:0}});
+  failTimer=setTimeout(()=>{
+    if(client&&!client.connected){log('server slow, trying another');client.end(true);bi=(bi+1)%BROKERS.length;connect()}
+  },9000);
+  client.on('connect',()=>{
+    clearTimeout(failTimer);log('connected');
+    client.subscribe(topic,{qos:0},err=>{
+      if(err){log('subscribe error');return}
+      send({a:'hello'});
+      say('You are in the theatre. Share the code so others can take a seat.');
+    });
   });
-  c.on('data',onMsg);c.on('error',e=>log('link error: '+e.type));
-  c.on('close',()=>{
-    if(conn!==c)return;
-    log('link closed');
-    partner='';seats();
-    if(isHost)say('Your guest left. They can rejoin with the same code.');
-    else{
-      say('Lost connection. Reconnecting...');
-      setTimeout(()=>{if(conn===c&&peer&&!peer.destroyed){if(peer.disconnected)peer.reconnect();setConn(peer.connect('lt-'+room,{reliable:true}))}},2500);
-    }
+  client.on('message',(tp,buf)=>{
+    let d;try{d=JSON.parse(buf.toString())}catch(e){return}
+    if(d.id===myId)return;
+    onMsg(d);
   });
+  client.on('reconnect',()=>log('reconnecting...'));
+  client.on('offline',()=>log('offline'));
+  client.on('error',e=>log('error: '+((e&&e.message)||e)));
 }
-function shareState(){if(pl)send({a:pl.playing()?'play':'pause',t:pl.time()})}
+function send(o){
+  if(client&&client.connected)client.publish(topic,JSON.stringify(Object.assign({id:myId,n:me},o)));
+}
+setInterval(()=>{
+  if(!client)return;
+  send({a:'ping'});
+  const now=Date.now();let ch=false;
+  mem.forEach((v,k)=>{if(now-v.seen>30000){mem.delete(k);ch=true}});
+  if(ch)seats();
+},10000);
+window.addEventListener('pagehide',()=>send({a:'bye'}));
 
 function onMsg(d){
-  if(d.a==='hello'){partner=d.n;seats();if(isHost&&curUrl){send({a:'load',u:curUrl});setTimeout(shareState,1500)}}
+  if(d.to&&d.to!==myId)return;
+  if(d.a==='bye'){mem.delete(d.id);seats();return}
+  const isNew=!mem.has(d.id);
+  mem.set(d.id,{n:d.n||'Guest',seen:Date.now()});
+  if(isNew){seats();log(d.n+' took a seat')}
+  if(d.a==='hello'){
+    send({a:'here'});
+    const ids=[myId].concat([...mem.keys()].filter(k=>k!==d.id)).sort();
+    if(curUrl&&pl&&ids[0]===myId){
+      send({a:'load',u:curUrl,to:d.id});
+      setTimeout(()=>{if(pl)send({a:pl.playing()?'play':'pause',t:pl.time(),to:d.id})},2000);
+    }
+  }
   else if(d.a==='load'){loadVideo(d.u,false)}
   else if(d.a==='play'||d.a==='pause'||d.a==='seek'){apply(d.a,d.t)}
 }
@@ -223,6 +223,7 @@ function ytId(u){
 }
 function loadVideo(u,broadcast){
   u=u.trim();if(!u)return;
+  if(!broadcast&&u===curUrl&&pl)return;
   const id=ytId(u);
   const isFile=/\.(mp4|webm|ogv)(\?|$)/i.test(u);
   if(!id&&!isFile){say('That link is not supported. Use a YouTube or .mp4 link.');return}
@@ -232,34 +233,37 @@ function loadVideo(u,broadcast){
     ytApi().then(()=>{
       const d=document.createElement('div');d.id='yt';stage.prepend(d);
       const p=new YT.Player('yt',{videoId:id,playerVars:{controls:0,playsinline:1,rel:0,disablekb:1,modestbranding:1},
-        events:{onReady:()=>{pl={play:()=>p.playVideo(),pause:()=>p.pauseVideo(),seek:t=>p.seekTo(t,true),time:()=>p.getCurrentTime(),playing:()=>p.getPlayerState()==1,
-          quality:q=>{try{p.setPlaybackQuality(q)}catch(e){}},
-          caps:on=>{try{p.loadModule('captions');p.setOption('captions','track',on?{languageCode:$('lang').value}:{})}catch(e){}}};
-          say('Video ready.');if(ccOn)pl.caps(true)},
+        events:{onReady:()=>{
+          pl={play:()=>p.playVideo(),pause:()=>p.pauseVideo(),seek:t=>p.seekTo(t,true),time:()=>p.getCurrentTime(),playing:()=>p.getPlayerState()==1,
+            quality:q=>{try{p.setPlaybackQuality(q)}catch(e){}},
+            caps:on=>{try{p.loadModule('captions');p.setOption('captions','track',on?{languageCode:$('lang').value}:{})}catch(e){}}};
+          say('Video ready.');if(ccOn)pl.caps(true);flush();
+        },
         onStateChange:e=>{if(e.data===1&&wantQ!=='default'&&pl)pl.quality(wantQ)}}});
     });
   }else{
     const v=document.createElement('video');v.src=u;v.playsInline=true;stage.prepend(v);vid=v;addTrack();
     pl={play:()=>v.play().catch(()=>say('Tap Play to start.')),pause:()=>v.pause(),seek:t=>{v.currentTime=t},time:()=>v.currentTime,playing:()=>!v.paused,
         quality:()=>{},caps:on=>{const t=v.textTracks[0];if(t)t.mode=on?'showing':'hidden'}};
-    say('Video ready.');
+    say('Video ready.');flush();
   }
-  if(broadcast)send({a:'load',u});
+  if(broadcast)send({a:'load',u:u});
 }
 function apply(a,t){
-  if(!pl){say('Video is still loading...');return}
+  if(!pl){pend=[a,t];say('Video is loading...');return}
   if(a==='play'){pl.seek(t);pl.play();$('pp').textContent='Pause'}
   else if(a==='pause'){pl.pause();pl.seek(t);$('pp').textContent='Play'}
   else if(a==='seek'){pl.seek(t)}
 }
-function act(a,t){apply(a,t);send({a,t})}
+function flush(){if(pend&&pl){const p=pend;pend=null;apply(p[0],p[1])}}
+function act(a,t){apply(a,t);send({a:a,t:t})}
 
 $('load').onclick=()=>loadVideo($('url').value,true);
 $('pp').onclick=()=>{if(!pl)return say('Load a video first.');pl.playing()?act('pause',pl.time()):act('play',pl.time())};
 $('back').onclick=()=>{if(pl)act('seek',Math.max(0,pl.time()-10))};
 $('fwd').onclick=()=>{if(pl)act('seek',pl.time()+10)};
 $('restart').onclick=()=>{if(pl)act('play',0)};
-$('sync').onclick=()=>{if(pl){send({a:pl.playing()?'play':'pause',t:pl.time()});say('Sent your spot to '+(partner||'your guest')+'.')}};
+$('sync').onclick=()=>{if(pl){send({a:pl.playing()?'play':'pause',t:pl.time()});say('Sent your spot to everyone.')}};
 $('full').onclick=()=>{(stage.requestFullscreen||stage.webkitRequestFullscreen||function(){}).call(stage)};
 
 // ---- quality and subtitles (local only) ----
